@@ -1,6 +1,6 @@
-"""
+# “””
 academic_plot.py  –  Library file  (do not edit for daily use)
-==============================================================
+
 Academic-grade Excel → Matplotlib plotter.
 
 Default figure size  : half-A4 width  (105 mm × 80 mm)
@@ -9,18 +9,23 @@ Dual Y-axis          : primary (left) + optional secondary (right)
 Per-series control   : marker · linestyle · colour · error bars · alpha
 Auto OS theme        : detects macOS / Windows / GNOME dark mode
 
-Dependencies
-------------
-    pip install matplotlib pandas openpyxl
+## Dependencies
 
-Public API
-----------
-    Classes   : Series · AxisConfig · LegendConfig · GridConfig · FigureConfig
-    Function  : plot_academic(...)  →  (fig, ax1)
-    Galleries : MARKER_GALLERY · LINE_GALLERY   (human-readable key → mpl code)
-"""
+```
+pip install matplotlib pandas openpyxl
+```
 
-from __future__ import annotations
+## Public API
+
+```
+Classes   : Series · AxisConfig · LegendConfig · GridConfig · FigureConfig
+Function  : plot_academic(...)  →  (fig, ax1)
+Galleries : MARKER_GALLERY · LINE_GALLERY   (human-readable key → mpl code)
+```
+
+“””
+
+from **future** import annotations
 
 import platform
 import subprocess
@@ -34,166 +39,492 @@ import matplotlib.ticker as mticker
 import pandas as pd
 
 # ─────────────────────────────────────────────────────────────────────────────
+
 # Type aliases
+
 # ─────────────────────────────────────────────────────────────────────────────
-ThemeMode = Literal["auto", "light", "dark"]
-GridAxis  = Literal["x", "y", "both", "none"]
+
+ThemeMode = Literal[“auto”, “light”, “dark”]
+GridAxis  = Literal[“x”, “y”, “both”, “none”]
 LegendLoc = Literal[
-    "best", "upper right", "upper left", "lower left", "lower right",
-    "right", "center left", "center right", "lower center",
-    "upper center", "center", "outside right", "outside lower",
+“best”, “upper right”, “upper left”, “lower left”, “lower right”,
+“right”, “center left”, “center right”, “lower center”,
+“upper center”, “center”, “outside right”, “outside lower”,
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
+
 # Galleries – human-readable keys → matplotlib codes
+
 # ─────────────────────────────────────────────────────────────────────────────
+
 MARKER_GALLERY: dict[str, str] = {
-    # key              mpl code   shape
-    "circle"       : "o",     # ●
-    "square"       : "s",     # ■
-    "triangle_up"  : "^",     # ▲
-    "triangle_dn"  : "v",     # ▼
-    "triangle_left": "<",     # ◀
-    "triangle_right": ">",    # ▶
-    "diamond"      : "D",     # ◆
-    "thin_diamond" : "d",     # ◇  (narrower)
-    "pentagon"     : "p",     # ⬠
-    "hexagon1"     : "h",     # ⬡  (flat top)
-    "hexagon2"     : "H",     # ⬡  (pointy top)
-    "star"         : "*",     # ★
-    "plus"         : "+",     # +
-    "cross"        : "x",     # ×
-    "point"        : ".",     # •  (tiny dot)
-    "pixel"        : ",",     # ·  (1 px, invisible at normal DPI)
-    "none"         : "None",  #    (no marker – line only)
+# key              mpl code   shape
+“circle”       : “o”,     # ●
+“square”       : “s”,     # ■
+“triangle_up”  : “^”,     # ▲
+“triangle_dn”  : “v”,     # ▼
+“triangle_left”: “<”,     # ◀
+“triangle_right”: “>”,    # ▶
+“diamond”      : “D”,     # ◆
+“thin_diamond” : “d”,     # ◇  (narrower)
+“pentagon”     : “p”,     # ⬠
+“hexagon1”     : “h”,     # ⬡  (flat top)
+“hexagon2”     : “H”,     # ⬡  (pointy top)
+“star”         : “*”,     # ★
+“plus”         : “+”,     # +
+“cross”        : “x”,     # ×
+“point”        : “.”,     # •  (tiny dot)
+“pixel”        : “,”,     # ·  (1 px, invisible at normal DPI)
+“none”         : “None”,  #    (no marker – line only)
 }
 
 LINE_GALLERY: dict[str, str] = {
-    # key            mpl code
-    "solid"        : "-",
-    "dashed"       : "--",
-    "dash_dot"     : "-.",
-    "dotted"       : ":",
-    "none"         : "None",   # scatter / markers only
+# key            mpl code
+“solid”        : “-”,
+“dashed”       : “–”,
+“dash_dot”     : “-.”,
+“dotted”       : “:”,
+“none”         : “None”,   # scatter / markers only
 }
 
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Data-class: Series
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Data-class: Series
-# ─────────────────────────────────────────────────────────────────────────────
+
 @dataclass
 class Series:
-    """One plotted data series (primary or secondary Y axis).
+“”“One plotted data series (primary or secondary Y axis).
 
-    Attributes
-    ----------
-    col : str
-        Excel column letter (``"A"``…``"ZZ"``) **or** exact header name.
-    label : str
-        Legend text for this series.
-    marker : str
-        Key from MARKER_GALLERY or raw mpl marker code (``"o"``, ``"s"``…).
-    linestyle : str
-        Key from LINE_GALLERY or raw mpl linestyle (``"-"``, ``"--"``…).
-    color : str | None
-        Any mpl colour: named (``"red"``), hex (``"#e63946"``),
-        or ``None`` for auto colour-cycle.
-    errorbar_col : str | None
-        Column letter or header holding ±σ values.  ``None`` = no error bar.
-    markersize : float
-        Marker diameter in typographic points.
-    linewidth : float
-        Line stroke width in points.
-    alpha : float
-        Opacity, 0.0 (transparent) … 1.0 (opaque).
-    zorder : int | None
-        Painter's order – higher number drawn on top.  ``None`` = mpl default.
-    """
-    col          : str
-    label        : str            = "Series"
-    marker       : str            = "circle"
-    linestyle    : str            = "solid"
-    color        : Optional[str]  = None
-    errorbar_col : Optional[str]  = None
-    markersize   : float          = 5.0
-    linewidth    : float          = 1.5
-    alpha        : float          = 1.0
-    zorder       : Optional[int]  = None
+```
+Attributes
+----------
+col : str
+    Excel column letter (``"A"``…``"ZZ"``) **or** exact header name.
+label : str
+    Legend text for this series.
+marker : str
+    Key from MARKER_GALLERY or raw mpl marker code (``"o"``, ``"s"``…).
+linestyle : str
+    Key from LINE_GALLERY or raw mpl linestyle (``"-"``, ``"--"``…).
+color : str | None
+    Any mpl colour: named (``"red"``), hex (``"#e63946"``),
+    or ``None`` for auto colour-cycle.
+errorbar_col : str | None
+    Column letter or header holding ±σ values.  ``None`` = no error bar.
+markersize : float
+    Marker diameter in typographic points.
+linewidth : float
+    Line stroke width in points.
+alpha : float
+    Opacity, 0.0 (transparent) … 1.0 (opaque).
+zorder : int | None
+    Painter's order – higher number drawn on top.  ``None`` = mpl default.
+"""
+col          : str
+label        : str            = "Series"
+marker       : str            = "circle"
+linestyle    : str            = "solid"
+color        : Optional[str]  = None
+errorbar_col : Optional[str]  = None
+markersize   : float          = 5.0
+linewidth    : float          = 1.5
+alpha        : float          = 1.0
+zorder       : Optional[int]  = None
 
-    def resolved_marker(self) -> str:
-        return MARKER_GALLERY.get(self.marker, self.marker)
+def resolved_marker(self) -> str:
+    return MARKER_GALLERY.get(self.marker, self.marker)
 
-    def resolved_linestyle(self) -> str:
-        return LINE_GALLERY.get(self.linestyle, self.linestyle)
-
+def resolved_linestyle(self) -> str:
+    return LINE_GALLERY.get(self.linestyle, self.linestyle)
+```
 
 # ─────────────────────────────────────────────────────────────────────────────
+
 # Data-class: AxisConfig
+
 # ─────────────────────────────────────────────────────────────────────────────
+
 @dataclass
 class AxisConfig:
-    """Visual settings for one axis (X, Y1, or Y2).
+“”“Visual settings for one axis (X, Y1, or Y2).
 
-    Attributes
-    ----------
-    label : str
-        Axis label.  Supports LaTeX math (prefix string with ``r``):
-        ``r"Temperature, $T$ (°C)"``
-        ``r"Heat flux $\\dot{q}$ (W m$^{-2}$)"``
-    label_pad : float
-        Gap between label and tick labels, in points.
-    limits : tuple[float, float] | None
-        Explicit axis range ``(min, max)``.  ``None`` = auto.
-    log_scale : bool
-        ``True`` → logarithmic scale on this axis.
-    tick_direction : str
-        Tick orientation: ``"in"``, ``"out"``, or ``"inout"``.
-    minor_ticks : bool
-        Display minor tick marks (auto-located between major ticks).
-    """
-    label          : str                           = ""
-    label_pad      : float                         = 4.0
-    limits         : Optional[tuple[float, float]] = None
-    log_scale      : bool                          = False
-    tick_direction : str                           = "in"
-    minor_ticks    : bool                          = True
-
+```
+Attributes
+----------
+label : str
+    Axis label.  Supports LaTeX math (prefix string with ``r``):
+    ``r"Temperature, $T$ (°C)"``
+    ``r"Heat flux $\\dot{q}$ (W m$^{-2}$)"``
+label_pad : float
+    Gap between label and tick labels, in points.
+limits : tuple[float, float] | None
+    Explicit axis range ``(min, max)``.  ``None`` = auto.
+log_scale : bool
+    ``True`` → logarithmic scale on this axis.
+tick_direction : str
+    Tick orientation: ``"in"``, ``"out"``, or ``"inout"``.
+minor_ticks : bool
+    Display minor tick marks (auto-located between major ticks).
+"""
+label          : str                           = ""
+label_pad      : float                         = 4.0
+limits         : Optional[tuple[float, float]] = None
+log_scale      : bool                          = False
+tick_direction : str                           = "in"
+minor_ticks    : bool                          = True
+```
 
 # ─────────────────────────────────────────────────────────────────────────────
+
 # Data-class: LegendConfig
+
 # ─────────────────────────────────────────────────────────────────────────────
+
 @dataclass
 class LegendConfig:
-    """Legend box appearance and placement.
+“”“Legend box appearance and placement.
 
-    Attributes
-    ----------
-    show : bool
-        Master on/off switch.
-    loc : str
-        Any value from LegendLoc.  Special values:
-        ``"outside right"``  – anchored to the right of the axes.
-        ``"outside lower"``  – anchored below the axes.
-    ncol : int
-        Number of side-by-side columns inside the legend box.
-    fontsize : float | None
-        Override font size.  ``None`` inherits ``font_size - 1``.
-    frameon : bool
-        Draw the surrounding box.
-    framealpha : float
-        Box background opacity, 0–1.
-    title : str
-        Optional heading inside the legend box.  ``""`` = no title.
-    """
-    show       : bool            = True
-    loc        : LegendLoc       = "best"
-    ncol       : int             = 1
-    fontsize   : Optional[float] = None
-    frameon    : bool            = True
-    framealpha : float           = 0.8
-    title      : str             = ""
+```
+Attributes
+----------
+show : bool
+    Master on/off switch.
+loc : str
+    Any value from LegendLoc.  Special values:
+    ``"outside right"``  – anchored to the right of the axes.
+    ``"outside lower"``  – anchored below the axes.
+ncol : int
+    Number of side-by-side columns inside the legend box.
+fontsize : float | None
+    Override font size.  ``None`` inherits ``font_size - 1``.
+frameon : bool
+    Draw the surrounding box.
+framealpha : float
+    Box background opacity, 0–1.
+title : str
+    Optional heading inside the legend box.  ``""`` = no title.
+"""
+show       : bool            = True
+loc        : LegendLoc       = "best"
+ncol       : int             = 1
+fontsize   : Optional[float] = None
+frameon    : bool            = True
+framealpha : float           = 0.8
+title      : str             = ""
+```
 
+# ─────────────────────────────────────────────────────────────────────────────
 
+# Data-class: GridConfig
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class GridConfig:
+“”“Gridline style.
+
+```
+Attributes
+----------
+show : bool
+    Master on/off.
+axis : GridAxis
+    Which directions to grid: ``"x"``, ``"y"``, ``"both"``, ``"none"``.
+major : bool
+    Draw major gridlines (at major tick positions).
+minor : bool
+    Draw minor gridlines (at minor tick positions, thinner).
+linestyle : str
+    Mpl linestyle for major grid (``"--"``, ``":"``, ``"-."``…).
+linewidth : float
+    Stroke width of major gridlines in points.
+alpha : float
+    Gridline opacity, 0–1.
+"""
+show      : bool     = True
+axis      : GridAxis = "both"
+major     : bool     = True
+minor     : bool     = False
+linestyle : str      = "--"
+linewidth : float    = 0.5
+alpha     : float    = 0.4
+```
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Data-class: FigureConfig
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class FigureConfig:
+“”“Figure geometry, title, and file output.
+
+```
+Attributes
+----------
+width_cm : float
+    Figure width in centimetres.
+    Default ``10.5`` = half A4 (portrait).
+    Full A4 width          → ``21.0``
+    Two-column journal     → ``8.5``  (typical single column)
+    One-column full width  → ``17.0`` (typical full width)
+height_cm : float
+    Figure height in centimetres.  Default ``8.0``.
+    Golden-ratio height for half-A4 → ``6.5``
+dpi : int
+    Dots-per-inch for raster formats.  ``300`` = print quality.
+output_file : str | Path | None
+    Destination path; extension selects format:
+        ``.pdf``   → vector PDF   (recommended for journals)
+        ``.svg``   → vector SVG
+        ``.png``   → raster PNG   (dpi ≥ 300)
+        ``.tiff``  → raster TIFF  (dpi ≥ 300)
+        ``.eps``   → Encapsulated PostScript
+    ``None`` → display interactively (plt.show).
+tight_layout : bool
+    Call ``fig.tight_layout()`` before saving.
+title : str
+    Suptitle printed above the axes.  ``""`` = no title.
+title_fontsize : float | None
+    Override title font size.  ``None`` → ``font_size + 2``.
+"""
+width_cm       : float                      = 10.5
+height_cm      : float                      = 8.0
+dpi            : int                        = 300
+output_file    : Optional[Union[str, Path]] = None
+tight_layout   : bool                       = True
+title          : str                        = ""
+title_fontsize : Optional[float]            = None
+```
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Internal helpers
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _detect_system_theme() -> Literal[“light”, “dark”]:
+try:
+if platform.system() == “Darwin”:
+r = subprocess.run(
+[“defaults”, “read”, “-g”, “AppleInterfaceStyle”],
+capture_output=True, text=True, timeout=2,
+)
+if r.returncode == 0 and “dark” in r.stdout.lower():
+return “dark”
+elif platform.system() == “Windows”:
+import winreg
+key = winreg.OpenKey(
+winreg.HKEY_CURRENT_USER,
+r”Software\Microsoft\Windows\CurrentVersion\Themes\Personalize”,
+)
+val, _ = winreg.QueryValueEx(key, “AppsUseLightTheme”)
+return “light” if val == 1 else “dark”
+elif platform.system() == “Linux”:
+r = subprocess.run(
+[“gsettings”, “get”, “org.gnome.desktop.interface”, “color-scheme”],
+capture_output=True, text=True, timeout=2,
+)
+if r.returncode == 0 and “dark” in r.stdout.lower():
+return “dark”
+except Exception:
+pass
+return “light”
+
+def _apply_theme(theme: ThemeMode) -> None:
+resolved = theme if theme in (“light”, “dark”) else _detect_system_theme()
+plt.style.use(“dark_background” if resolved == “dark” else “default”)
+
+def _col_letter_to_index(letter: str) -> int:
+idx = 0
+for ch in letter.upper().strip():
+idx = idx * 26 + (ord(ch) - ord(“A”) + 1)
+return idx - 1
+
+def _resolve_column(df: pd.DataFrame, spec: str) -> str:
+if spec in df.columns:
+return spec
+if spec.replace(” “, “”).isalpha() and len(spec.strip()) <= 3:
+try:
+idx = _col_letter_to_index(spec)
+if 0 <= idx < len(df.columns):
+return df.columns[idx]
+except Exception:
+pass
+raise KeyError(
+f”Column ‘{spec}’ not found.\nAvailable columns: {list(df.columns)}”
+)
+
+def _style_axis(ax: plt.Axes, cfg: AxisConfig, which: str) -> None:
+pad = {“labelpad”: cfg.label_pad}
+if which == “x”:
+ax.set_xlabel(cfg.label, **pad)
+if cfg.limits:  ax.set_xlim(cfg.limits)
+if cfg.log_scale: ax.set_xscale(“log”)
+ax.tick_params(axis=“x”, direction=cfg.tick_direction,
+which=“both” if cfg.minor_ticks else “major”)
+if cfg.minor_ticks:
+ax.xaxis.set_minor_locator(mticker.AutoMinorLocator())
+else:
+ax.set_ylabel(cfg.label, **pad)
+if cfg.limits:  ax.set_ylim(cfg.limits)
+if cfg.log_scale: ax.set_yscale(“log”)
+ax.tick_params(axis=“y”, direction=cfg.tick_direction,
+which=“both” if cfg.minor_ticks else “major”)
+if cfg.minor_ticks:
+ax.yaxis.set_minor_locator(mticker.AutoMinorLocator())
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Main public function
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+def plot_academic(
+filename         : Union[str, Path],
+sheetname        : Union[str, int] = 0,
+x_col            : str             = “A”,
+skip_rows        : int             = 0,
+primary_series   : list[Series]    = None,
+secondary_series : list[Series]    = None,
+x_axis           : AxisConfig      = None,
+y1_axis          : AxisConfig      = None,
+y2_axis          : AxisConfig      = None,
+legend           : LegendConfig    = None,
+grid             : GridConfig      = None,
+figure           : FigureConfig    = None,
+theme            : ThemeMode       = “auto”,
+font_family      : str             = “serif”,
+font_size        : float           = 9.0,
+) -> tuple[plt.Figure, plt.Axes]:
+“”“Read an Excel sheet and render an academic-quality Matplotlib figure.
+
+```
+Returns
+-------
+(fig, ax1) : tuple
+    The Figure and primary Axes for any post-call tweaking.
+"""
+if primary_series   is None: primary_series   = []
+if secondary_series is None: secondary_series = []
+if x_axis  is None: x_axis  = AxisConfig(label="X")
+if y1_axis is None: y1_axis = AxisConfig(label="Y")
+if y2_axis is None: y2_axis = AxisConfig(label="Y2")
+if legend  is None: legend  = LegendConfig()
+if grid    is None: grid    = GridConfig()
+if figure  is None: figure  = FigureConfig()
+
+_apply_theme(theme)
+matplotlib.rcParams.update({
+    "font.family"       : font_family,
+    "font.size"         : font_size,
+    "axes.titlesize"    : font_size + 2,
+    "axes.labelsize"    : font_size,
+    "xtick.labelsize"   : font_size - 1,
+    "ytick.labelsize"   : font_size - 1,
+    "legend.fontsize"   : legend.fontsize or (font_size - 1),
+    "figure.dpi"        : figure.dpi,
+    "savefig.dpi"       : figure.dpi,
+    "axes.linewidth"    : 0.8,
+    "xtick.major.width" : 0.8,  "ytick.major.width" : 0.8,
+    "xtick.minor.width" : 0.5,  "ytick.minor.width" : 0.5,
+    "xtick.major.size"  : 4.0,  "ytick.major.size"  : 4.0,
+    "xtick.minor.size"  : 2.5,  "ytick.minor.size"  : 2.5,
+})
+
+fp = Path(filename)
+if not fp.exists():
+    raise FileNotFoundError(f"File not found: {fp.resolve()}")
+
+df = pd.read_excel(fp, sheet_name=sheetname, skiprows=skip_rows)
+df.columns = [str(c) for c in df.columns]
+x_data = pd.to_numeric(df[_resolve_column(df, x_col)], errors="coerce")
+
+fig, ax1 = plt.subplots(figsize=(figure.width_cm / 2.54,
+                                 figure.height_cm / 2.54))
+ax2 = ax1.twinx() if secondary_series else None
+
+_style_axis(ax1, x_axis,  "x")
+_style_axis(ax1, y1_axis, "y")
+if ax2: _style_axis(ax2, y2_axis, "y2")
+
+def _draw(ax: plt.Axes, slist: list[Series]) -> list:
+    handles = []
+    for s in slist:
+        y  = pd.to_numeric(df[_resolve_column(df, s.col)], errors="coerce")
+        kw = dict(label=s.label, marker=s.resolved_marker(),
+                  linestyle=s.resolved_linestyle(),
+                  markersize=s.markersize, linewidth=s.linewidth,
+                  alpha=s.alpha)
+        if s.color:           kw["color"]  = s.color
+        if s.zorder is not None: kw["zorder"] = s.zorder
+
+        if s.errorbar_col:
+            yerr = pd.to_numeric(
+                df[_resolve_column(df, s.errorbar_col)], errors="coerce")
+            handles.append(
+                ax.errorbar(x_data, y, yerr=yerr, **kw,
+                            capsize=3, capthick=0.8, elinewidth=0.8))
+        else:
+            line, = ax.plot(x_data, y, **kw)
+            handles.append(line)
+    return handles
+
+h1 = _draw(ax1, primary_series)
+h2 = _draw(ax2, secondary_series) if ax2 else []
+
+if figure.title:
+    ax1.set_title(figure.title,
+                  fontsize=figure.title_fontsize or (font_size + 2), pad=6)
+
+if legend.show and (h1 or h2):
+    kw = dict(handles=h1 + h2,
+              labels=[s.label for s in primary_series + secondary_series],
+              ncol=legend.ncol, frameon=legend.frameon,
+              framealpha=legend.framealpha,
+              fontsize=legend.fontsize or (font_size - 1))
+    if legend.title: kw["title"] = legend.title
+    if legend.loc == "outside right":
+        kw.update(bbox_to_anchor=(1.15, 0.5), loc="center left",
+                  borderaxespad=0)
+    elif legend.loc == "outside lower":
+        kw.update(bbox_to_anchor=(0.5, -0.28), loc="upper center")
+    else:
+        kw["loc"] = legend.loc
+    ax1.legend(**kw)
+
+if grid.show and grid.axis != "none":
+    gkw = dict(linestyle=grid.linestyle,
+               linewidth=grid.linewidth, alpha=grid.alpha)
+    if grid.major: ax1.grid(True, which="major", axis=grid.axis, **gkw)
+    if grid.minor: ax1.grid(True, which="minor", axis=grid.axis,
+                            linewidth=grid.linewidth * 0.5, **gkw)
+else:
+    ax1.grid(False)
+
+if ax2 and secondary_series and secondary_series[0].color:
+    c = secondary_series[0].color
+    ax2.spines["right"].set_color(c)
+    ax2.tick_params(axis="y", colors=c)
+    ax2.yaxis.label.set_color(c)
+
+if figure.tight_layout:
+    fig.tight_layout()
+
+if figure.output_file:
+    out = Path(figure.output_file)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out, dpi=figure.dpi, bbox_inches="tight")
+    print(f"[academic_plot] saved → {out.resolve()}")
+else:
+    plt.show()
+
+return fig, ax1
+```
 
 
 
