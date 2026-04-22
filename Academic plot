@@ -1,0 +1,824 @@
+"""
+academic_plot.py  –  Library file  (do not edit for daily use)
+==============================================================
+Academic-grade Excel → Matplotlib plotter.
+
+Default figure size  : half-A4 width  (105 mm × 80 mm)
+Supported outputs    : PDF · SVG · PNG · TIFF · EPS
+Dual Y-axis          : primary (left) + optional secondary (right)
+Per-series control   : marker · linestyle · colour · error bars · alpha
+Auto OS theme        : detects macOS / Windows / GNOME dark mode
+
+Dependencies
+------------
+    pip install matplotlib pandas openpyxl
+
+Public API
+----------
+    Classes   : Series · AxisConfig · LegendConfig · GridConfig · FigureConfig
+    Function  : plot_academic(...)  →  (fig, ax1)
+    Galleries : MARKER_GALLERY · LINE_GALLERY   (human-readable key → mpl code)
+"""
+
+from __future__ import annotations
+
+import platform
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal, Optional, Union
+
+import matplotlib
+import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
+import pandas as pd
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Type aliases
+# ─────────────────────────────────────────────────────────────────────────────
+ThemeMode = Literal["auto", "light", "dark"]
+GridAxis  = Literal["x", "y", "both", "none"]
+LegendLoc = Literal[
+    "best", "upper right", "upper left", "lower left", "lower right",
+    "right", "center left", "center right", "lower center",
+    "upper center", "center", "outside right", "outside lower",
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Galleries – human-readable keys → matplotlib codes
+# ─────────────────────────────────────────────────────────────────────────────
+MARKER_GALLERY: dict[str, str] = {
+    # key              mpl code   shape
+    "circle"       : "o",     # ●
+    "square"       : "s",     # ■
+    "triangle_up"  : "^",     # ▲
+    "triangle_dn"  : "v",     # ▼
+    "triangle_left": "<",     # ◀
+    "triangle_right": ">",    # ▶
+    "diamond"      : "D",     # ◆
+    "thin_diamond" : "d",     # ◇  (narrower)
+    "pentagon"     : "p",     # ⬠
+    "hexagon1"     : "h",     # ⬡  (flat top)
+    "hexagon2"     : "H",     # ⬡  (pointy top)
+    "star"         : "*",     # ★
+    "plus"         : "+",     # +
+    "cross"        : "x",     # ×
+    "point"        : ".",     # •  (tiny dot)
+    "pixel"        : ",",     # ·  (1 px, invisible at normal DPI)
+    "none"         : "None",  #    (no marker – line only)
+}
+
+LINE_GALLERY: dict[str, str] = {
+    # key            mpl code
+    "solid"        : "-",
+    "dashed"       : "--",
+    "dash_dot"     : "-.",
+    "dotted"       : ":",
+    "none"         : "None",   # scatter / markers only
+}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Data-class: Series
+# ─────────────────────────────────────────────────────────────────────────────
+@dataclass
+class Series:
+    """One plotted data series (primary or secondary Y axis).
+
+    Attributes
+    ----------
+    col : str
+        Excel column letter (``"A"``…``"ZZ"``) **or** exact header name.
+    label : str
+        Legend text for this series.
+    marker : str
+        Key from MARKER_GALLERY or raw mpl marker code (``"o"``, ``"s"``…).
+    linestyle : str
+        Key from LINE_GALLERY or raw mpl linestyle (``"-"``, ``"--"``…).
+    color : str | None
+        Any mpl colour: named (``"red"``), hex (``"#e63946"``),
+        or ``None`` for auto colour-cycle.
+    errorbar_col : str | None
+        Column letter or header holding ±σ values.  ``None`` = no error bar.
+    markersize : float
+        Marker diameter in typographic points.
+    linewidth : float
+        Line stroke width in points.
+    alpha : float
+        Opacity, 0.0 (transparent) … 1.0 (opaque).
+    zorder : int | None
+        Painter's order – higher number drawn on top.  ``None`` = mpl default.
+    """
+    col          : str
+    label        : str            = "Series"
+    marker       : str            = "circle"
+    linestyle    : str            = "solid"
+    color        : Optional[str]  = None
+    errorbar_col : Optional[str]  = None
+    markersize   : float          = 5.0
+    linewidth    : float          = 1.5
+    alpha        : float          = 1.0
+    zorder       : Optional[int]  = None
+
+    def resolved_marker(self) -> str:
+        return MARKER_GALLERY.get(self.marker, self.marker)
+
+    def resolved_linestyle(self) -> str:
+        return LINE_GALLERY.get(self.linestyle, self.linestyle)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Data-class: AxisConfig
+# ─────────────────────────────────────────────────────────────────────────────
+@dataclass
+class AxisConfig:
+    """Visual settings for one axis (X, Y1, or Y2).
+
+    Attributes
+    ----------
+    label : str
+        Axis label.  Supports LaTeX math (prefix string with ``r``):
+        ``r"Temperature, $T$ (°C)"``
+        ``r"Heat flux $\\dot{q}$ (W m$^{-2}$)"``
+    label_pad : float
+        Gap between label and tick labels, in points.
+    limits : tuple[float, float] | None
+        Explicit axis range ``(min, max)``.  ``None`` = auto.
+    log_scale : bool
+        ``True`` → logarithmic scale on this axis.
+    tick_direction : str
+        Tick orientation: ``"in"``, ``"out"``, or ``"inout"``.
+    minor_ticks : bool
+        Display minor tick marks (auto-located between major ticks).
+    """
+    label          : str                           = ""
+    label_pad      : float                         = 4.0
+    limits         : Optional[tuple[float, float]] = None
+    log_scale      : bool                          = False
+    tick_direction : str                           = "in"
+    minor_ticks    : bool                          = True
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Data-class: LegendConfig
+# ─────────────────────────────────────────────────────────────────────────────
+@dataclass
+class LegendConfig:
+    """Legend box appearance and placement.
+
+    Attributes
+    ----------
+    show : bool
+        Master on/off switch.
+    loc : str
+        Any value from LegendLoc.  Special values:
+        ``"outside right"``  – anchored to the right of the axes.
+        ``"outside lower"``  – anchored below the axes.
+    ncol : int
+        Number of side-by-side columns inside the legend box.
+    fontsize : float | None
+        Override font size.  ``None`` inherits ``font_size - 1``.
+    frameon : bool
+        Draw the surrounding box.
+    framealpha : float
+        Box background opacity, 0–1.
+    title : str
+        Optional heading inside the legend box.  ``""`` = no title.
+    """
+    show       : bool            = True
+    loc        : LegendLoc       = "best"
+    ncol       : int             = 1
+    fontsize   : Optional[float] = None
+    frameon    : bool            = True
+    framealpha : float           = 0.8
+    title      : str             = ""
+
+
+
+
+
+# =============================================================================
+
+# run_plot.py  –  Configuration & caller file
+
+# Edit this file for every new figure.  Never edit academic_plot.py.
+
+# =============================================================================
+
+# 
+
+# QUICK START
+
+# ———–
+
+# 1. Set INPUT_FILE and SHEET below.
+
+# 2. Set x_col  to the column letter (A, B, C …) that holds your X data.
+
+# 3. Fill primary_series with one Series(…) block per Y curve.
+
+# 4. Set OUTPUT_FILE (extension decides format: .pdf / .svg / .png / .tiff).
+
+# 5. Run:  python run_plot.py
+
+# 
+
+# =============================================================================
+
+from academic_plot import (
+plot_academic,
+Series,
+AxisConfig,
+LegendConfig,
+GridConfig,
+FigureConfig,
+)
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+# FILE & SHEET
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+INPUT_FILE  = “data.xlsx”   # path to your Excel file (absolute or relative)
+SHEET       = “Sheet1”      # sheet name (string) or 0-based index (integer)
+SKIP_ROWS   = 0             # rows to skip before the header row (int)
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+# X AXIS COLUMN
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Use the Excel column letter (“A”, “B”, “AA” …) or the exact header name.
+
+X_COL = “A”
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+# OUTPUT FILE
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Extension selects format automatically.
+
+# Recommended:
+
+# .pdf   → lossless vector; preferred by most journals
+
+# .svg   → lossless vector; editable in Inkscape / Illustrator
+
+# .png   → raster; use dpi=300 (set in FigureConfig below)
+
+# .tiff  → raster; use dpi=300; accepted by many journals
+
+# .eps   → Encapsulated PostScript; legacy journals
+
+OUTPUT_FILE = “figure_1.pdf”
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+# GLOBAL APPEARANCE
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+# theme       : “auto”  → reads OS dark/light setting automatically
+
+# : “light” → force white background
+
+# : “dark”  → force dark background
+
+# 
+
+# font_family : “serif”      → Times-like   (most journals)
+
+# : “sans-serif” → Helvetica-like (some journals, presentations)
+
+# : “monospace”  → Courier-like
+
+# : Any installed font name, e.g. “DejaVu Serif”
+
+# 
+
+# font_size   : base size in points (axis labels, tick labels scale from this)
+
+# Typical journal values: 7–9 pt
+
+THEME       = “auto”
+FONT_FAMILY = “serif”
+FONT_SIZE   = 9.0
+
+# =============================================================================
+
+# ENGINEERING LABEL REFERENCE  –  use raw strings (r”…”) for LaTeX math
+
+# =============================================================================
+
+# 
+
+# LaTeX mode is activated by enclosing text in $…$
+
+# Always prefix the string with  r  to avoid Python escape conflicts.
+
+# 
+
+# ── GREEK LETTERS ──────────────────────────────────────────────────────────
+
+# α  alpha    → r”$\alpha$”          β  beta      → r”$\beta$”
+
+# γ  gamma    → r”$\gamma$”          δ  delta     → r”$\delta$”
+
+# ε  epsilon  → r”$\epsilon$”        ζ  zeta      → r”$\zeta$”
+
+# η  eta      → r”$\eta$”            θ  theta     → r”$\theta$”
+
+# λ  lambda   → r”$\lambda$”         μ  mu        → r”$\mu$”
+
+# ν  nu       → r”$\nu$”             ρ  rho       → r”$\rho$”
+
+# σ  sigma    → r”$\sigma$”          τ  tau       → r”$\tau$”
+
+# φ  phi      → r”$\phi$”            χ  chi       → r”$\chi$”
+
+# ψ  psi      → r”$\psi$”            ω  omega     → r”$\omega$”
+
+# Δ  Delta    → r”$\Delta$”          Φ  Phi       → r”$\Phi$”
+
+# Σ  Sigma    → r”$\Sigma$”          Ω  Omega     → r”$\Omega$”
+
+# Π  Pi       → r”$\Pi$”             Λ  Lambda    → r”$\Lambda$”
+
+# 
+
+# ── SUBSCRIPTS & SUPERSCRIPTS ───────────────────────────────────────────────
+
+# Single char  T_s    → r”$T_s$”          use underscore _
+
+# Multi-char   T_rec  → r”$T_\mathrm{rec}$”   use \mathrm{} for roman text
+
+# Superscript  m²     → r”m$^2$”          use caret ^
+
+# Negative exp m⁻¹    → r”m$^{-1}$”
+
+# Combined     m s⁻¹  → r”m s$^{-1}$”    or r”m$,$s$^{-1}$” (thin space)
+
+# 
+
+# ── DERIVATIVES / RATE NOTATION ─────────────────────────────────────────────
+
+# ṁ  mass-flow rate   → r”$\dot{m}$”
+
+# Q̇  heat rate        → r”$\dot{Q}$”
+
+# q̇  heat flux rate   → r”$\dot{q}$”
+
+# q″  heat flux       → r”$q’’$”          two apostrophes
+
+# ∂T  partial deriv.  → r”$\partial T$”
+
+# 
+
+# ── COMMON ENGINEERING UNIT LABELS ──────────────────────────────────────────
+
+# Temperature (°C)            → r”Temperature, $T$ (°C)”
+
+# Temperature (K)             → r”Temperature, $T$ (K)”
+
+# Time (s)                    → r”Time, $t$ (s)”
+
+# Heat flux (W m⁻²)           → r”Heat flux, $q’’$ (W m$^{-2}$)”
+
+# Heat rate (W)               → r”Heat rate, $\dot{Q}$ (W)”
+
+# Skin wettedness (–)         → r”Skin wettedness, $w$ (–)”
+
+# Metabolic rate (W m⁻²)      → r”Metabolic rate, $M$ (W m$^{-2}$)”
+
+# Evaporative heat loss (W)   → r”$E_\mathrm{sk}$ (W)”
+
+# Sweat rate (g h⁻¹)          → r”Sweat rate, $\dot{m}_\mathrm{sw}$ (g h$^{-1}$)”
+
+# Skin temperature (°C)       → r”Skin temperature, $T_\mathrm{sk}$ (°C)”
+
+# Core temperature (°C)       → r”Core temperature, $T_\mathrm{cr}$ (°C)”
+
+# Blood flow (L h⁻¹)          → r”Blood flow, $\dot{V}_\mathrm{bl}$ (L h$^{-1}$)”
+
+# Relative humidity (%)       → r”Relative humidity, $\phi$ (%)”
+
+# Air velocity (m s⁻¹)        → r”Air velocity, $v_\mathrm{a}$ (m s$^{-1}$)”
+
+# Wind speed (km h⁻¹)         → r”Wind speed, $U$ (km h$^{-1}$)”
+
+# Wet-bulb globe temp (°C)    → r”WBGT (°C)”
+
+# Physiological strain index  → r”Physiological Strain Index, PSI (–)”
+
+# Heart rate (bpm)            → r”Heart rate, $f_\mathrm{H}$ (min$^{-1}$)”
+
+# Oxygen uptake (mL kg⁻¹ min⁻¹) → r”$\dot{V}\mathrm{O_2}$ (mL kg$^{-1}$ min$^{-1}$)”
+
+# Pressure (Pa)               → r”Pressure, $p$ (Pa)”
+
+# Pressure (kPa)              → r”Pressure, $p$ (kPa)”
+
+# Vapour pressure (kPa)       → r”Vapour pressure, $p_\mathrm{v}$ (kPa)”
+
+# Thermal conductance (W K⁻¹) → r”Conductance, $G$ (W K$^{-1}$)”
+
+# Density (kg m⁻³)            → r”Density, $\rho$ (kg m$^{-3}$)”
+
+# Specific heat (J kg⁻¹ K⁻¹) → r”$c_p$ (J kg$^{-1}$ K$^{-1}$)”
+
+# Dynamic viscosity (Pa s)    → r”Viscosity, $\mu$ (Pa s)”
+
+# Reynolds number (–)         → r”Reynolds number, Re (–)”
+
+# Nusselt number (–)          → r”Nusselt number, Nu (–)”
+
+# MET (–)                     → r”Activity level (MET)”
+
+# BSA-normalised (W m⁻²)      → r”(W m$^{-2}_\mathrm{BSA}$)”
+
+# Irradiance (W m⁻²)          → r”Solar irradiance, $G_\mathrm{s}$ (W m$^{-2}$)”
+
+# Mean radiant temp (°C)      → r”Mean radiant temperature, $T_\mathrm{mrt}$ (°C)”
+
+# Operative temperature (°C)  → r”Operative temperature, $T_\mathrm{op}$ (°C)”
+
+# 
+
+# =============================================================================
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+# PRIMARY Y-AXIS SERIES
+
+# Add one Series(…) block per curve.  Remove or comment out unused ones.
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+# 
+
+# Series arguments:
+
+# 
+
+# col          Column letter or exact header name.
+
+# 
+
+# label        Legend entry text.
+
+# Supports LaTeX: r”$T_\mathrm{sk}$ – Exp.”
+
+# 
+
+# marker       From MARKER_GALLERY key   OR   raw mpl code:
+
+# “circle”        “o”     ●
+
+# “square”        “s”     ■
+
+# “triangle_up”   “^”     ▲
+
+# “triangle_dn”   “v”     ▼
+
+# “diamond”       “D”     ◆
+
+# “thin_diamond”  “d”     ◇
+
+# “pentagon”      “p”     ⬠
+
+# “star”          “*”     ★
+
+# “plus”          “+”     +
+
+# “cross”         “x”     ×
+
+# “hexagon1”      “h”     ⬡
+
+# “point”         “.”     •
+
+# “none”          “None”     (line only, no marker)
+
+# 
+
+# linestyle    From LINE_GALLERY key     OR   raw mpl code:
+
+# “solid”         “-”
+
+# “dashed”        “–”
+
+# “dash_dot”      “-.”
+
+# “dotted”        “:”
+
+# “none”          “None”   (scatter / markers only)
+
+# 
+
+# color        Named colour, hex string, or None (auto-cycle):
+
+# “red”  “black”  “navy”  “teal”  “gray”
+
+# “#e63946”  “#1d3557”  “#457b9d”  “#2a9d8f”  “#e9c46a”
+
+# 
+
+# errorbar_col Column letter or header of ±σ  (one-sided).
+
+# Leave as None for no error bars.
+
+# 
+
+# markersize   Diameter in pt.  Typical range: 3–7
+
+# linewidth    Stroke in pt.    Typical range: 1.0–2.0
+
+# alpha        Opacity 0–1.     1.0 = fully opaque
+
+# zorder       Draw order; higher = on top.  None = matplotlib default.
+
+PRIMARY_SERIES = [
+Series(
+col          = “B”,           # ← change to your column
+label        = r”$T_\mathrm{cr}$ – Experiment”,
+marker       = “circle”,
+linestyle    = “none”,        # scatter style (markers only)
+color        = “#e63946”,
+errorbar_col = “C”,           # column with ±σ values; None if unused
+markersize   = 4.5,
+linewidth    = 1.5,
+alpha        = 1.0,
+zorder       = 3,
+),
+Series(
+col          = “D”,
+label        = r”$T_\mathrm{cr}$ – Simulation 1”,
+marker       = “none”,        # line only
+linestyle    = “solid”,
+color        = “#1d3557”,
+errorbar_col = None,
+markersize   = 5.0,
+linewidth    = 1.5,
+alpha        = 1.0,
+zorder       = 2,
+),
+Series(
+col          = “E”,
+label        = r”$T_\mathrm{cr}$ – Simulation 2”,
+marker       = “none”,
+linestyle    = “dashed”,
+color        = “#457b9d”,
+errorbar_col = None,
+markersize   = 5.0,
+linewidth    = 1.5,
+alpha        = 0.85,
+zorder       = 1,
+),
+# ── Add more series here ──────────────────────────────────────────────────
+# Series(col=“F”, label=r”Sim 3”, marker=“square”, linestyle=“dotted”,
+#         color=”#2a9d8f”),
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+# SECONDARY Y-AXIS SERIES  (right-hand axis)
+
+# Set to an empty list  []  to disable the secondary axis entirely.
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+SECONDARY_SERIES = [
+Series(
+col          = “F”,
+label        = r”Relative humidity, $\phi$ (%)”,
+marker       = “triangle_up”,
+linestyle    = “dotted”,
+color        = “#2a9d8f”,
+errorbar_col = None,
+markersize   = 4.0,
+linewidth    = 1.2,
+alpha        = 1.0,
+),
+# ── Disable secondary axis by removing all entries or using [] ────────────
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+# AXIS LABELS
+
+# Use the engineering label reference above to build LaTeX strings.
+
+# 
+
+# AxisConfig arguments:
+
+# label          Axis label text (plain or LaTeX r”…” string).
+
+# label_pad      Gap between label and tick numbers, in pt.  Default 4.
+
+# limits         (min, max) tuple or None for auto-range.
+
+# log_scale      True → log axis.
+
+# tick_direction “in” | “out” | “inout”
+
+# minor_ticks    True → minor tick marks shown.
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+X_AXIS = AxisConfig(
+label          = r”Time, $t$ (s)”,
+label_pad      = 4,
+limits         = None,            # e.g. (0, 3600)  or  None
+log_scale      = False,
+tick_direction = “in”,
+minor_ticks    = True,
+)
+
+Y1_AXIS = AxisConfig(
+label          = r”Core temperature, $T_\mathrm{cr}$ (°C)”,
+label_pad      = 4,
+limits         = None,            # e.g. (36.5, 40.0) or None
+log_scale      = False,
+tick_direction = “in”,
+minor_ticks    = True,
+)
+
+Y2_AXIS = AxisConfig(
+label          = r”Relative humidity, $\phi$ (%)”,
+label_pad      = 4,
+limits         = (0, 100),        # fix 0–100 % range
+log_scale      = False,
+tick_direction = “in”,
+minor_ticks    = True,
+)
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+# LEGEND
+
+# 
+
+# LegendConfig arguments:
+
+# show         True | False  – master toggle.
+
+# loc          Location string.  Options:
+
+# “best”           auto-placed to avoid data
+
+# “upper right”    “upper left”
+
+# “lower right”    “lower left”
+
+# “center left”    “center right”
+
+# “upper center”   “lower center”
+
+# “center”
+
+# “outside right”  anchored to the right of the plot
+
+# “outside lower”  anchored below the plot
+
+# ncol         Number of legend columns (1 = single column).
+
+# fontsize     Override font size (pt), or None to inherit.
+
+# frameon      True → show legend box frame.
+
+# framealpha   Box background opacity 0–1.  0 = transparent frame.
+
+# title        Heading text inside the box.  “” = no title.
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+LEGEND = LegendConfig(
+show       = True,
+loc        = “upper left”,   # try “outside right” if crowded
+ncol       = 1,
+fontsize   = None,           # None → inherits font_size - 1
+frameon    = True,
+framealpha = 0.75,
+title      = “”,             # e.g. “Model runs”
+)
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+# GRID
+
+# 
+
+# GridConfig arguments:
+
+# show       True | False  – master toggle.
+
+# axis       “x”    → vertical lines only
+
+# “y”    → horizontal lines only
+
+# “both” → full grid
+
+# “none” → grid off (same as show=False)
+
+# major      True → draw gridlines at major tick positions.
+
+# minor      True → draw lighter gridlines at minor tick positions.
+
+# linestyle  “–”  “:”  “-.”  “-”   (dashed is standard for grids)
+
+# linewidth  Stroke in pt.  Typical: 0.3–0.6
+
+# alpha      Opacity 0–1.  Typical: 0.3–0.5
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+GRID = GridConfig(
+show      = True,
+axis      = “both”,
+major     = True,
+minor     = False,
+linestyle = “–”,
+linewidth = 0.4,
+alpha     = 0.4,
+)
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+# FIGURE SIZE, DPI, TITLE, OUTPUT
+
+# 
+
+# FigureConfig arguments:
+
+# width_cm       Figure width in cm.
+
+# 10.5  → half A4 portrait (default)
+
+# 21.0  → full A4 width
+
+# 8.5  → single column in two-column journal (≈ 3.35 in)
+
+# 17.0  → full width in two-column journal (≈ 6.7 in)
+
+# height_cm      Figure height in cm.  Default 8.0.
+
+# Golden ratio (half A4) → 6.5
+
+# dpi            300 for print / journal submission.
+
+# 150 for screen / draft.
+
+# output_file    Path + filename with extension (see OUTPUT_FILE above).
+
+# None → show interactively.
+
+# tight_layout   True → prevents axis labels from being clipped.
+
+# title          Suptitle above axes.  “” = no title.
+
+# title_fontsize Override title size.  None → font_size + 2.
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+FIGURE = FigureConfig(
+width_cm       = 10.5,         # half A4
+height_cm      = 8.0,
+dpi            = 300,
+output_file    = OUTPUT_FILE,
+tight_layout   = True,
+title          = “”,           # e.g. “Core temperature response during exercise”
+title_fontsize = None,
+)
+
+# =============================================================================
+
+# CALL  –  do not edit below this line
+
+# =============================================================================
+
+if **name** == “**main**”:
+fig, ax = plot_academic(
+filename         = INPUT_FILE,
+sheetname        = SHEET,
+x_col            = X_COL,
+skip_rows        = SKIP_ROWS,
+primary_series   = PRIMARY_SERIES,
+secondary_series = SECONDARY_SERIES,   # pass [] to disable
+x_axis           = X_AXIS,
+y1_axis          = Y1_AXIS,
+y2_axis          = Y2_AXIS,
+legend           = LEGEND,
+grid             = GRID,
+figure           = FIGURE,
+theme            = THEME,
+font_family      = FONT_FAMILY,
+font_size        = FONT_SIZE,
+)
+# fig and ax are returned for any post-call tweaks, e.g.:
+# ax.axhline(y=38.5, color=“gray”, linestyle=”:”, linewidth=0.8)
+# ax.annotate(“threshold”, xy=(100, 38.5), fontsize=7)
+
