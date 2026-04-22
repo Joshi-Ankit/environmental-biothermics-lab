@@ -1153,3 +1153,57 @@ font_size        = FONT_SIZE,
 # ax.axhline(y=38.5, color=“gray”, linestyle=”:”, linewidth=0.8)
 # ax.annotate(“threshold”, xy=(100, 38.5), fontsize=7)
 
+@dataclass
+class AxisConfig:
+    label          : str                           = ""
+    label_pad      : float                         = 4.0
+    limits         : Optional[tuple[float, float]] = None
+    tick_spacing   : Optional[float]               = None   # ← ADD THIS
+    log_scale      : bool                          = False
+    tick_direction : str                           = "in"
+    minor_ticks    : bool                          = True
+
+def _style_axis(ax: plt.Axes, cfg: AxisConfig, which: str) -> None:
+    pad = {"labelpad": cfg.label_pad}
+    if which == "x":
+        ax.set_xlabel(cfg.label, **pad)
+        if cfg.limits:      ax.set_xlim(cfg.limits)
+        if cfg.log_scale:   ax.set_xscale("log")
+        if cfg.tick_spacing:
+            ax.xaxis.set_major_locator(mticker.MultipleLocator(cfg.tick_spacing))
+        ax.tick_params(axis="x", direction=cfg.tick_direction,
+                       which="both" if cfg.minor_ticks else "major")
+        if cfg.minor_ticks:
+            ax.xaxis.set_minor_locator(mticker.AutoMinorLocator())
+    else:
+        ax.set_ylabel(cfg.label, **pad)
+        if cfg.limits:      ax.set_ylim(cfg.limits)
+        if cfg.log_scale:   ax.set_yscale("log")
+        if cfg.tick_spacing:
+            ax.yaxis.set_major_locator(mticker.MultipleLocator(cfg.tick_spacing))
+        ax.tick_params(axis="y", direction=cfg.tick_direction,
+                       which="both" if cfg.minor_ticks else "major")
+        if cfg.minor_ticks:
+            ax.yaxis.set_minor_locator(mticker.AutoMinorLocator())
+
+
+X_AXIS = AxisConfig(
+    label        = r"Time, $t$ (h)",
+    limits       = (0, 48),   # start, end
+    tick_spacing = 6,         # major tick every 6 units → 0, 6, 12, 18...48
+    minor_ticks  = True,      # auto minor ticks between majors
+)
+
+Y1_AXIS = AxisConfig(
+    label        = r"Core temperature, $T_\mathrm{cr}$ (°C)",
+    limits       = (36, 39),  # start, end
+    tick_spacing = 0.5,       # major tick every 0.5 °C
+    minor_ticks  = True,
+)
+
+Y2_AXIS = AxisConfig(
+    label        = r"Relative humidity, $\phi$ (%)",
+    limits       = (0, 100),
+    tick_spacing = 20,        # every 20 %
+    minor_ticks  = True,
+)
